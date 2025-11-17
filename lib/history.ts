@@ -1,30 +1,38 @@
-export interface HistoryEvent {
-  id: number;
-  timestamp: string;
-  type: 'task_add' | 'task_complete' | 'task_check' | 'task_delete' | 'game_played';
-  detail: string;
+import { LevelData } from './gemini';
+import { CustomAssets } from '../App';
+
+export interface HistoryEntry {
+  id: string;
+  timestamp: number;
+  levelData: LevelData;
+  customAssets: CustomAssets;
+  drawingDataUrl: string;
 }
 
-const HISTORY_KEY = 'alectrix_history';
+const HISTORY_KEY = 'art2arcade-history';
 
-export const getHistory = (): HistoryEvent[] => {
+export const getHistory = (): HistoryEntry[] => {
   try {
-    const savedHistory = localStorage.getItem(HISTORY_KEY);
-    return savedHistory ? JSON.parse(savedHistory) : [];
+    const historyJson = localStorage.getItem(HISTORY_KEY);
+    return historyJson ? JSON.parse(historyJson) : [];
   } catch (error) {
     console.error("Failed to parse history from localStorage", error);
     return [];
   }
 };
 
-export const addHistoryEvent = (event: Omit<HistoryEvent, 'id' | 'timestamp'>): HistoryEvent[] => {
+export const saveGameToHistory = (newEntry: HistoryEntry): HistoryEntry[] => {
   const history = getHistory();
-  const newEvent: HistoryEvent = {
-    ...event,
-    id: Date.now(),
-    timestamp: new Date().toISOString(),
-  };
-  const updatedHistory = [newEvent, ...history].slice(0, 100); // Keep last 100 events
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
+  // Add to the beginning of the array
+  const updatedHistory = [newEntry, ...history];
+  // Limit history size to prevent localStorage from filling up
+  if (updatedHistory.length > 20) {
+    updatedHistory.pop();
+  }
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
+  } catch (error) {
+    console.error("Failed to save history to localStorage", error);
+  }
   return updatedHistory;
 };

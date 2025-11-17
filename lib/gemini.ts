@@ -1,676 +1,219 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, Modality } from "@google/genai";
 
-// FIX: Define PuzzleData and related types here instead of importing from a non-existent export in App.tsx.
-export interface CrosswordData {
-    title: string;
-    size: number;
-    grid: ({ number?: number; letter?: string } | null)[][];
-    clues: {
-        across: string[];
-        down: string[];
-    };
+// This is a browser environment, but we are polyfilling process.env via a build script
+// for secure API key handling on deployment platforms.
+declare global {
+  interface Window {
+    process: {
+      env: {
+        API_KEY: string;
+      }
+    }
+  }
 }
 
-export interface WordSearchData {
-    title: string;
-    grid: string[][];
-    words: string[];
+const apiKey = window.process?.env?.API_KEY;
+
+// Ensure the API key is available from the environment variables
+if (!apiKey) {
+  throw new Error("API_KEY environment variable not set. Please set it in your deployment environment (e.g., Netlify, Vercel).");
 }
 
-export interface FillInTheBlanksData {
-    title: string;
-    questions: {
-        question: string;
-        answer: string;
-    }[];
+const ai = new GoogleGenAI({ apiKey });
+
+// --- TYPE DEFINITIONS for Level Data ---
+interface Vector2 { x: number; y: number; }
+interface GameObject { x: number; y: number; width: number; height: number; }
+interface MovingPlatform extends GameObject {
+    moveType: 'horizontal' | 'vertical';
+    moveRange: number;
 }
 
-export interface MatchingData {
-    title: string;
-    pairs: {
-        term: string;
-        definition: string;
-    }[];
-}
-
-export interface PuzzleData {
-    crossword: CrosswordData;
-    wordSearch: WordSearchData;
-    fillInTheBlanks: FillInTheBlanksData;
-    matching: MatchingData;
-}
-
-
-// --- Data Type Interfaces ---
-
-export interface DragAndDropGameData {
-    title: string;
-    instruction: string;
-    categories: string[];
-    items: {
-        text: string;
-        category: string;
-    }[];
-}
-
-export interface Mistake {
-    incorrectText: string;
-    correctText: string;
-    explanation: string;
-}
-
-export interface FindTheMistakeData {
-    title: string;
-    instruction: string;
-    challengeText: string;
-    mistakes: Mistake[];
-}
-
-export interface SpeedRoundQuestion {
-    questionText: string;
-    options: string[];
-    correctAnswer: string;
-}
-
-export interface SpeedRoundsData {
-    title: string;
-    instruction: string;
-    questions: SpeedRoundQuestion[];
-}
-
-export interface StoryNode {
-    storyText: string;
-    question: string;
-    options: {
-        text: string;
-        isCorrect: boolean;
-        feedback: string;
-    }[];
-}
-
-export interface StoryBasedChallengeData {
-    title: string;
-    introduction: string;
-    nodes: StoryNode[];
-    conclusion: string;
-}
-
-export interface ChallengeItem {
-    type: 'Scenario' | 'Analogy';
-    title: string;
-    text: string;
-    question: string;
-    options: string[];
-    correctAnswer: string;
-    explanation: string;
-}
-
-export interface ScenariosAndAnalogiesData {
-    title: string;
-    challenges: ChallengeItem[];
-}
-
-export interface OutsideTheBoxData {
-    title: string;
-    problemStatement: string;
-    hints: string[];
-    solutionExplanation: string;
-}
-
-export interface AdventureStage {
-    description: string;
-    companionDialogue: string;
-    challenge: {
-        question: string;
-        options: string[];
-        correctAnswer: string;
-    };
-    successResponse: string;
-    failureResponse: string;
-}
-
-export interface MiniAdventureData {
-    title: string;
-    introduction: string;
-    stages: AdventureStage[];
-    conclusion: string;
-}
-
-export interface KnowledgeTrackerData {
-    title: string;
-    overallSummary: string;
-    activitySummaries: {
-        activity: string;
-        skill: string;
-    }[];
-    reflectionPrompts: string[];
-}
-
-export interface AllGamesData {
-    puzzles: PuzzleData;
-    dragAndDrop: DragAndDropGameData;
-    findTheMistake: FindTheMistakeData;
-    speedRounds: SpeedRoundsData;
-    storyBasedChallenge: StoryBasedChallengeData;
-    scenariosAndAnalogies: ScenariosAndAnalogiesData;
-    outsideTheBox: OutsideTheBoxData;
-    miniAdventure: MiniAdventureData;
-    knowledgeTracker: KnowledgeTrackerData;
-}
-
-// --- Knowledge Map Interfaces ---
-export interface KnowledgeMapNode {
-    id: string;
-    label: string;
-    summary: string;
-    isCentral: boolean;
-}
-
-export interface KnowledgeMapEdge {
-    from: string;
-    to: string;
-    label: string;
-}
-
-export interface KnowledgeMapData {
-    nodes: KnowledgeMapNode[];
-    edges: KnowledgeMapEdge[];
-}
-
-// --- Flashcard Interfaces ---
-export interface Flashcard {
-    front: string;
-    back: string;
-}
-
-export interface FlashcardData {
-    title: string;
-    cards: Flashcard[];
+export interface LevelData {
+  gameType: 'platformer' | 'maze' | 'falling-dodger';
+  playerStart: Vector2;
+  platforms: GameObject[]; // Also used as walls for maze
+  goals: Vector2[];
+  hazards: GameObject[];
+  movingPlatforms?: MovingPlatform[];
 }
 
 
-// --- Schemas for Generation ---
-
-const puzzleSchema = {
+const levelSchema = {
     type: Type.OBJECT,
     properties: {
-        crossword: {
+        gameType: {
+            type: Type.STRING,
+            description: "The type of game detected. Can be 'platformer', 'maze', or 'falling-dodger'.",
+            enum: ['platformer', 'maze', 'falling-dodger']
+        },
+        playerStart: {
             type: Type.OBJECT,
-            description: "A crossword puzzle with a grid, clues, and answers.",
+            description: "The starting coordinates of the player character, derived from the green element.",
             properties: {
-                title: { type: Type.STRING },
-                size: { type: Type.INTEGER, description: "The grid size, e.g., 10 for a 10x10 grid." },
-                grid: {
-                    type: Type.ARRAY,
-                    description: "A 2D array representing the crossword grid. Use null for black squares and a number for the start of a clue.",
-                    items: {
-                        type: Type.ARRAY,
-                        items: { type: Type.OBJECT, properties: { number: { type: Type.INTEGER }, letter: { type: Type.STRING } }, nullable: true }
-                    }
+                x: { type: Type.NUMBER, description: "X coordinate as a percentage of canvas width." },
+                y: { type: Type.NUMBER, description: "Y coordinate as a percentage of canvas height." },
+            },
+        },
+        platforms: {
+            type: Type.ARRAY,
+            description: "For 'platformer', these are solid ground. For 'maze', these are impassable walls. For 'falling-dodger', this is usually empty.",
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    x: { type: Type.NUMBER, description: "Top-left X coordinate as a percentage of canvas width." },
+                    y: { type: Type.NUMBER, description: "Top-left Y coordinate as a percentage of canvas height." },
+                    width: { type: Type.NUMBER, description: "Width as a percentage of canvas width." },
+                    height: { type: Type.NUMBER, description: "Height as a percentage of canvas height." },
                 },
-                clues: {
-                    type: Type.OBJECT,
-                    properties: {
-                        across: { type: Type.ARRAY, items: { type: Type.STRING, description: "Clue format: '1. The clue text'" } },
-                        down: { type: Type.ARRAY, items: { type: Type.STRING, description: "Clue format: '2. The clue text'" } }
-                    }
-                }
-            }
+            },
         },
-        wordSearch: {
-            type: Type.OBJECT,
-            description: "A word search puzzle with a grid of letters and a list of words to find.",
-            properties: {
-                title: { type: Type.STRING },
-                grid: {
-                    type: Type.ARRAY,
-                    description: "A 2D array of letters.",
-                    items: { type: Type.ARRAY, items: { type: Type.STRING } }
+        goals: {
+            type: Type.ARRAY,
+            description: "A list of all goal items (collectibles/power-ups), derived from the blue shapes.",
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    x: { type: Type.NUMBER, description: "Center X coordinate as a percentage of canvas width." },
+                    y: { type: Type.NUMBER, description: "Center Y coordinate as a percentage of canvas height." },
                 },
-                words: { type: Type.ARRAY, items: { type: Type.STRING } }
-            }
+            },
         },
-        fillInTheBlanks: {
-            type: Type.OBJECT,
-            description: "A quiz with sentences where a key word is missing.",
-            properties: {
-                title: { type: Type.STRING },
-                questions: {
-                    type: Type.ARRAY,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            question: { type: Type.STRING, description: "The sentence with '___' for the blank." },
-                            answer: { type: Type.STRING }
-                        }
-                    }
-                }
-            }
-        },
-        matching: {
-            type: Type.OBJECT,
-            description: "An exercise to match terms with their definitions.",
-            properties: {
-                title: { type: Type.STRING },
-                pairs: {
-                    type: Type.ARRAY,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            term: { type: Type.STRING },
-                            definition: { type: Type.STRING }
-                        }
-                    }
-                }
-            }
-        }
-    }
-};
-
-const dragAndDropSchema = {
-    type: Type.OBJECT,
-    properties: {
-        title: { type: Type.STRING, description: "A creative title for the game." },
-        instruction: { type: Type.STRING, description: "A simple instruction for the player." },
-        categories: { 
+        hazards: {
             type: Type.ARRAY,
-            description: "An array of exactly 3 category names.",
-            items: { type: Type.STRING }
-        },
-        items: {
-            type: Type.ARRAY,
-            description: "An array of exactly 8 items to be categorized. Each item must belong to one of the defined categories.",
+            description: "A list of all hazards, derived from the red shapes.",
             items: {
                 type: Type.OBJECT,
                 properties: {
-                    text: { type: Type.STRING, description: "The text of the draggable item." },
-                    category: { type: Type.STRING, description: "The correct category name for this item." }
-                }
-            }
-        }
-    }
-};
-
-const findTheMistakeSchema = {
-    type: Type.OBJECT,
-    properties: {
-        title: { type: Type.STRING, description: "A creative title for the challenge." },
-        instruction: { type: Type.STRING, description: "A simple instruction for the player." },
-        challengeText: { type: Type.STRING, description: "A paragraph of text derived from the user's notes, but with 3 subtle factual errors intentionally introduced." },
-        mistakes: {
-            type: Type.ARRAY,
-            description: "An array of objects detailing each mistake.",
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    incorrectText: { type: Type.STRING, description: "The exact word or phrase that is incorrect in the challenge text." },
-                    correctText: { type: Type.STRING, description: "The correct word or phrase." },
-                    explanation: { type: Type.STRING, description: "A brief explanation of why the original text was incorrect." }
-                }
-            }
-        }
-    }
-};
-
-const speedRoundsSchema = {
-    type: Type.OBJECT,
-    properties: {
-        title: { type: Type.STRING, description: "A creative title for the speed round." },
-        instruction: { type: Type.STRING, description: "A simple instruction for the player about the timed quiz." },
-        questions: {
-            type: Type.ARRAY,
-            description: "An array of exactly 8 multiple-choice questions.",
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    questionText: { type: Type.STRING, description: "The question to be asked." },
-                    options: { 
-                        type: Type.ARRAY,
-                        description: "An array of 4 string options for the multiple-choice question.",
-                        items: { type: Type.STRING }
-                    },
-                    correctAnswer: { type: Type.STRING, description: "The correct answer, which must be one of the provided options." }
-                }
-            }
-        }
-    }
-};
-
-const storyBasedChallengeSchema = {
-    type: Type.OBJECT,
-    properties: {
-        title: { type: Type.STRING, description: "A creative, adventurous title for the story." },
-        introduction: { type: Type.STRING, description: "A short introductory paragraph to set the scene." },
-        nodes: {
-            type: Type.ARRAY,
-            description: "An array of exactly 3 story nodes, each representing a step in the adventure.",
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    storyText: { type: Type.STRING, description: "The narrative text for this part of the story." },
-                    question: { type: Type.STRING, description: "A multiple-choice question based on the user's notes to challenge the player." },
-                    options: {
-                        type: Type.ARRAY,
-                        description: "An array of 3 or 4 options for the question.",
-                        items: {
-                            type: Type.OBJECT,
-                            properties: {
-                                text: { type: Type.STRING, description: "The text of the choice." },
-                                isCorrect: { type: Type.BOOLEAN, description: "Whether this choice is the correct answer." },
-                                feedback: { type: Type.STRING, description: "Feedback to show the user after they select this option, explaining the consequence or correcting their knowledge." }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        conclusion: { type: Type.STRING, description: "A concluding paragraph to wrap up the story after the final challenge." }
-    }
-};
-
-const scenariosAndAnalogiesSchema = {
-    type: Type.OBJECT,
-    properties: {
-        title: { type: Type.STRING, description: "A creative title for this set of challenges." },
-        challenges: {
-            type: Type.ARRAY,
-            description: "An array of exactly 3 challenges, mixing scenarios and analogies.",
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    type: { type: Type.STRING, description: "The type of challenge, either 'Scenario' or 'Analogy'." },
-                    title: { type: Type.STRING, description: "A specific title for this challenge, e.g., 'A Real-World Scenario' or 'Analogy: The Solar System'." },
-                    text: { type: Type.STRING, description: "The descriptive text for the scenario or analogy." },
-                    question: { type: Type.STRING, description: "A multiple-choice question to test the user's understanding of the concept's application." },
-                    options: {
-                        type: Type.ARRAY,
-                        description: "An array of 4 string options for the multiple-choice question.",
-                        items: { type: Type.STRING }
-                    },
-                    correctAnswer: { type: Type.STRING, description: "The correct answer, which must be one of the provided options." },
-                    explanation: { type: Type.STRING, description: "A brief explanation of why the correct answer is right, reinforcing the learning concept." }
-                }
-            }
-        }
-    }
-};
-
-const outsideTheBoxSchema = {
-    type: Type.OBJECT,
-    properties: {
-        title: { type: Type.STRING, description: "A creative and intriguing title for the problem." },
-        problemStatement: { type: Type.STRING, description: "A paragraph describing a non-obvious, creative problem related to the user's text. It should require lateral thinking." },
-        hints: {
-            type: Type.ARRAY,
-            description: "An array of 3 hints that progressively guide the user towards the solution without giving it away.",
-            items: { type: Type.STRING }
-        },
-        solutionExplanation: { type: Type.STRING, description: "A detailed explanation of the creative solution and the thought process behind it." }
-    }
-};
-
-const miniAdventureSchema = {
-    type: Type.OBJECT,
-    properties: {
-        title: { type: Type.STRING, description: "A whimsical title for the mini-adventure." },
-        introduction: { type: Type.STRING, description: "An introductory paragraph that sets the scene for an adventure with a companion." },
-        stages: {
-            type: Type.ARRAY,
-            description: "An array of exactly 3 stages for the adventure.",
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    description: { type: Type.STRING, description: "The narrative text describing this stage of the adventure." },
-                    companionDialogue: { type: Type.STRING, description: "A short, encouraging, or curious line of dialogue for the user's companion." },
-                    challenge: {
-                        type: Type.OBJECT,
-                        properties: {
-                            question: { type: Type.STRING, description: "A multiple-choice question related to the user's notes, framed as a challenge in the story." },
-                            options: {
-                                type: Type.ARRAY,
-                                description: "An array of 3 or 4 options for the question.",
-                                items: { type: Type.STRING }
-                            },
-                            correctAnswer: { type: Type.STRING, description: "The correct answer, which must be one of the options." }
-                        }
-                    },
-                    successResponse: { type: Type.STRING, description: "A short narrative text describing the positive outcome of answering correctly." },
-                    failureResponse: { type: Type.STRING, description: "A short narrative text describing the consequence of answering incorrectly, which should still allow the story to progress." }
-                }
-            }
-        },
-        conclusion: { type: Type.STRING, description: "A concluding paragraph that wraps up the adventure and praises the user." }
-    }
-};
-
-const knowledgeTrackerSchema = {
-    type: Type.OBJECT,
-    properties: {
-        title: { type: Type.STRING, description: "A creative title for the knowledge tracker page, like 'Your Learning Constellation'." },
-        overallSummary: { type: Type.STRING, description: "A brief, encouraging summary of the key concepts found in the user's text." },
-        activitySummaries: {
-            type: Type.ARRAY,
-            description: "An array of objects summarizing the skill tested by each activity type, based on the provided text.",
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    activity: { type: Type.STRING, description: "The name of the learning activity (e.g., 'Puzzles', 'Mini-Adventures')." },
-                    skill: { type: Type.STRING, description: "The core skill this activity helps develop with this specific knowledge (e.g., 'Pattern Recognition', 'Narrative Application')." }
-                }
-            }
-        },
-        reflectionPrompts: {
-            type: Type.ARRAY,
-            description: "An array of 3 thoughtful, open-ended questions to prompt user reflection.",
-            items: { type: Type.STRING }
-        }
-    }
-};
-
-const knowledgeMapSchema = {
-    type: Type.OBJECT,
-    properties: {
-        nodes: {
-            type: Type.ARRAY,
-            description: "An array of concept nodes.",
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    id: { type: Type.STRING, description: "A unique, concise ID for the node (e.g., 'photosynthesis')." },
-                    label: { type: Type.STRING, description: "The display label for the node (e.g., 'Photosynthesis')." },
-                    summary: { type: Type.STRING, description: "A 1-2 sentence explanation of the concept." },
-                    isCentral: { type: Type.BOOLEAN, description: "True if this is a primary topic, false otherwise." }
+                    x: { type: Type.NUMBER, description: "Top-left X coordinate as a percentage of canvas width." },
+                    y: { type: Type.NUMBER, description: "Top-left Y coordinate as a percentage of canvas height." },
+                    width: { type: Type.NUMBER, description: "Width as a percentage of canvas width." },
+                    height: { type: Type.NUMBER, description: "Height as a percentage of canvas height." },
                 },
-                required: ["id", "label", "summary", "isCentral"],
-            }
+            },
         },
-        edges: {
+        movingPlatforms: {
             type: Type.ARRAY,
-            description: "An array of edges connecting the nodes.",
+            description: "A list of all moving platforms, derived from the purple shapes (for platformers only).",
             items: {
                 type: Type.OBJECT,
                 properties: {
-                    from: { type: Type.STRING, description: "The ID of the starting node." },
-                    to: { type: Type.STRING, description: "The ID of the ending node." },
-                    label: { type: Type.STRING, description: "A short label describing the relationship (e.g., 'is part of')." }
+                    x: { type: Type.NUMBER, description: "Initial top-left X coordinate as a percentage of canvas width." },
+                    y: { type: Type.NUMBER, description: "Initial top-left Y coordinate as a percentage of canvas height." },
+                    width: { type: Type.NUMBER, description: "Width as a percentage of canvas width." },
+                    height: { type: Type.NUMBER, description: "Height as a percentage of canvas height." },
+                    moveType: { type: Type.STRING, description: "Movement axis, either 'horizontal' or 'vertical', based on shape." },
+                    moveRange: { type: Type.NUMBER, description: "Movement distance as a percentage of canvas dimension." }
                 },
-                required: ["from", "to", "label"],
-            }
-        }
+                required: ["x", "y", "width", "height", "moveType", "moveRange"]
+            },
+        },
     },
-    required: ["nodes", "edges"],
-};
-
-const flashcardSchema = {
-    type: Type.OBJECT,
-    properties: {
-        title: { type: Type.STRING, description: "A concise, relevant title for the flashcard deck based on the text." },
-        cards: {
-            type: Type.ARRAY,
-            description: "An array of 5 to 10 flashcards.",
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    front: { type: Type.STRING, description: "The front of the card, typically a question or a key term." },
-                    back: { type: Type.STRING, description: "The back of the card, containing the answer or definition." }
-                },
-                required: ["front", "back"]
-            }
-        }
-    },
-    required: ["title", "cards"]
+    required: ["gameType", "playerStart", "platforms", "goals", "hazards"],
 };
 
 
+const systemInstruction = `
+You are a creative and helpful game engine that converts a child's drawing into a playable 2D game level. Your main goal is to always produce a fun, complete, and playable level, even if the drawing is sparse or incomplete.
 
-// --- Combined Schema and Generation Function ---
+First, analyze the overall structure of the drawing to determine the game type.
+- If the drawing consists of many red hazard shapes near the top and a green player start near the bottom with very few or no platforms, classify the gameType as 'falling-dodger'.
+- If the drawing consists of many interconnected black lines forming paths and corridors, classify the gameType as 'maze'.
+- Otherwise, if the drawing consists of separate, flat surfaces that look like platforms for jumping on, classify the gameType as 'platformer'.
 
-const allGamesSchema = {
-    type: Type.OBJECT,
-    properties: {
-        puzzles: puzzleSchema,
-        dragAndDrop: dragAndDropSchema,
-        findTheMistake: findTheMistakeSchema,
-        speedRounds: speedRoundsSchema,
-        storyBasedChallenge: storyBasedChallengeSchema,
-        scenariosAndAnalogies: scenariosAndAnalogiesSchema,
-        outsideTheBox: outsideTheBoxSchema,
-        miniAdventure: miniAdventureSchema,
-        knowledgeTracker: knowledgeTrackerSchema,
-    }
-};
+Then, identify the game elements based on their color.
+- DARK SLATE (#475569) elements are static platforms (for 'platformer') or impassable walls (for 'maze').
+- GREEN (#22C55E) elements represent the player's starting position. Find the center of the green object.
+- BLUE (#3B82F6) elements are goals (collectibles in 'platformer', the exit in 'maze', or power-ups in 'falling-dodger'). Find the center of each blue object.
+- RED (#EF4444) elements are hazards the player must avoid.
+- PURPLE (#A855F7) elements are moving platforms (only for 'platformer' type).
+  - If a purple shape is wider than it is tall, its moveType should be 'horizontal'.
+  - If it is taller than it is wide, its moveType should be 'vertical'.
+  - Set its moveRange to be a sensible value, like 30.
+
+**CRITICAL RULE: PLAYABILITY ANALYSIS**
+Before finalizing the level data, you MUST perform a mental play-through to ensure the level is winnable.
+- For a 'platformer', trace a path from the player start. Can the player realistically jump between platforms to reach the goal(s)? If a jump is impossible, adjust the platform position to make it possible.
+- For a 'maze', you must trace a path from the player start to the goal. This path must be wide enough for the player character to fit through at all points. Imagine the player is a small square; the corridors must be wider than this square. If any part of the path is too narrow, you must adjust the wall positions ('platforms') to create a clear, navigable corridor. There must be a guaranteed, completable route from start to finish.
+- For a 'falling-dodger', ensure the density of hazards is challenging but survivable for a reasonable amount of time.
+- The level MUST always be completable by the player.
+
+**IMPORTANT RULES FOR ROBUSTNESS:**
+- **Always create a playable level.** If the drawing seems sparse, create a simple but complete level based on the user's intent.
+- For a 'platformer', ensure there's at least one platform and at least one goal that is reachable. If no platforms are drawn, create a simple ground platform.
+- For a 'maze', if there is no goal, add one in a reachable location.
+- For a 'falling-dodger', if there are no hazards, add a few simple ones falling from the top.
+- If the player start (green) is missing, place it at a logical starting point: {x: 10, y: 80} for platformers, {x: 5, y: 5} for mazes, or {x: 50, y: 90} for falling-dodgers.
+- If a color is missing for an optional element, return an empty array for that element type.
+
+Your response MUST be a valid JSON object that strictly adheres to the provided schema.
+All coordinates and dimensions must be percentages of the total canvas size (0 to 100).
+`;
 
 
-export async function generateAllGames(text: string): Promise<AllGamesData | null> {
+export const generateLevelFromDrawing = async (imageBase64: string): Promise<LevelData> => {
+    const imagePart = {
+        inlineData: {
+            mimeType: 'image/png',
+            data: imageBase64,
+        },
+    };
+    const textPart = {
+        text: "Analyze this drawing and generate the level data based on the color-coded elements and overall structure."
+    };
+
     try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: { parts: [imagePart, textPart] },
+            config: {
+                systemInstruction,
+                responseMimeType: "application/json",
+                responseSchema: levelSchema,
+                temperature: 0.1,
+            },
+        });
+
+        const jsonText = response.text.trim();
+        const parsedJson = JSON.parse(jsonText);
+
+        // Ensure optional fields are arrays if they don't exist
+        if (!parsedJson.movingPlatforms) {
+            parsedJson.movingPlatforms = [];
+        }
         
-        const prompt = `Based on the following text, create a comprehensive set of educational games and challenges. Generate content for ALL of the following categories: puzzles (crossword, word search, fill-in-the-blanks, matching), a drag-and-drop game, a find-the-mistake challenge, a speed round quiz, a story-based challenge, a scenarios & analogies challenge, an outside-the-box problem, a mini-adventure, and knowledge tracker data.
-
-Ensure all content is directly derived from the text and that the entire response is a single JSON object that adheres to the provided schema.
-
-Text:
----
-${text}
----`;
-
-        const response = await ai.models.generateContent({
-            model: 'gemini-flash-latest',
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: allGamesSchema,
-                thinkingConfig: { thinkingBudget: 0 },
-            }
-        });
-
-        const jsonString = response.text.trim();
-        const allGames = JSON.parse(jsonString);
-
-        return allGames;
-
+        return parsedJson as LevelData;
     } catch (error) {
-        console.error("Gemini API call for all games failed:", error);
-        return null;
+        console.error("Error generating level from drawing:", error);
+        throw new Error("Failed to generate level from AI.");
     }
-}
+};
 
 
-// --- Knowledge Map Generation Function ---
-export async function generateKnowledgeMap(text: string): Promise<KnowledgeMapData | null> {
-    if (!text || text.trim().length < 50) {
-        console.error("Input text is too short for knowledge map generation.");
-        return null;
+export const generateImageAsset = async (prompt: string): Promise<string> => {
+  try {
+    const fullPrompt = `A single, centered game asset of (${prompt}). The asset should be in a 2D style, suitable for a platformer game. It must have a transparent background.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: {
+        parts: [{ text: fullPrompt }],
+      },
+      config: {
+          responseModalities: [Modality.IMAGE],
+      },
+    });
+
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData) {
+        const base64ImageBytes: string = part.inlineData.data;
+        return `data:image/png;base64,${base64ImageBytes}`;
+      }
     }
-    try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+    throw new Error("No image data found in response.");
 
-        const prompt = `Analyze the following text. Identify the main topics and related sub-topics. Structure this information as a knowledge graph in a JSON format. The graph should consist of nodes and edges.
-- Each node must have a unique 'id' (a concise key, e.g., 'photosynthesis'), a 'label' for display (e.g., 'Photosynthesis'), a 'summary' (a 1-2 sentence explanation), and an 'isCentral' boolean flag to indicate if it's a primary topic.
-- Each edge must have a 'from' and 'to' field corresponding to node ids, and a 'label' describing the relationship (e.g., 'is a type of', 'requires', 'produces').
-- Identify 1-3 central topics. Create around 5-10 nodes in total.
-- Ensure the output is a single, valid JSON object that strictly adheres to the provided schema.
-
-Text:
----
-${text}
----`;
-
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: knowledgeMapSchema,
-            }
-        });
-
-        const jsonString = response.text.trim();
-        const mapData = JSON.parse(jsonString);
-        return mapData;
-
-    } catch (error) {
-        console.error("Gemini API call for knowledge map failed:", error);
-        return null;
-    }
-}
-
-// --- Flashcard Generation Function ---
-export async function generateFlashcards(text: string): Promise<FlashcardData | null> {
-    if (!text || text.trim().length < 50) {
-        console.error("Input text is too short for flashcard generation.");
-        return null;
-    }
-    try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
-
-        const prompt = `From the following text, create a set of flashcards for studying. Each flashcard should have a 'front' (a question or a key term) and a 'back' (the corresponding answer or definition). Generate between 5 and 10 cards. The output must be a single, valid JSON object that strictly adheres to the provided schema.
-
-Text:
----
-${text}
----`;
-
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: flashcardSchema,
-            }
-        });
-
-        const jsonString = response.text.trim();
-        const cardData = JSON.parse(jsonString);
-        return cardData;
-
-    } catch (error) {
-        console.error("Gemini API call for flashcards failed:", error);
-        return null;
-    }
-}
-
-
-// --- Default Data for Knowledge Tracker ---
-
-export function generateDefaultKnowledgeTrackerData(): KnowledgeTrackerData {
-    return {
-        title: "Your Learning Journey Awaits",
-        overallSummary: "This is your personal space to watch your knowledge grow! Start by adding some notes, and I'll help you turn them into fun activities and track your progress.",
-        activitySummaries: [
-            { activity: "Puzzles", skill: "Detail Recall" },
-            { activity: "Drag-and-Drop", skill: "Categorization" },
-            { activity: "Find the Mistake", skill: "Critical Analysis" },
-            { activity: "Speed Rounds", skill: "Quick Recall" },
-            { activity: "Story Challenges", skill: "Applied Knowledge" },
-            { activity: "Scenarios", skill: "Practical Application" },
-            { activity: "Creative Problems", skill: "Lateral Thinking" },
-            { activity: "Adventures", skill: "Engaged Learning" },
-        ],
-        reflectionPrompts: [
-            "What was the most interesting thing I learned today?",
-            "How can I use this knowledge in a real-life situation?",
-            "What concept is still a little fuzzy to me?"
-        ]
-    };
-}
+  } catch (error) {
+    console.error("Error generating image asset:", error);
+    throw new Error("Failed to generate image asset from AI.");
+  }
+};
